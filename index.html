@@ -776,6 +776,12 @@ $('#file').onchange=async e=>{
 const SYNC_KEY='kcal-sync',J=JSON.stringify;
 let SY=(()=>{try{return JSON.parse(localStorage.getItem(SYNC_KEY))||{}}catch(e){return{}}})();
 SY.queue=SY.queue||[];SY.base=SY.base||{};
+// Підключення за замовчуванням: новий пристрій з'єднується з таблицею сам, без ручного введення.
+const DEFAULT_SYNC={
+  url:'https://script.google.com/macros/s/AKfycbyrn9v7M7xVGFwxT49InpXosNyZR_Y08Rm4TixrNrYpT-pULt87ry7Vxhh8bYb4slNI8Q/exec',
+  token:'qwertyasdfghzxcvbqazwsxedcrfv'
+};
+if(!SY.url&&!SY.off){SY.url=DEFAULT_SYNC.url;SY.token=DEFAULT_SYNC.token;SY.auto=true}
 let syBusy=false,syRunning=false,syInflight=0,syTimer=null,syErr='',syVer=0;
 const sySave=()=>{try{localStorage.setItem(SYNC_KEY,J(SY))}catch(e){}};
 const parseJ=s=>{try{return s?JSON.parse(s):null}catch(e){return null}};
@@ -879,7 +885,7 @@ async function syInit(){
   const T=(await syFetch('GET','pull')).tables;
   const remoteHas=T.entries.length||T.products.length,localHas=S.entries.length||S.products.length;
   let pull=false;
-  if(remoteHas)pull=!localHas||confirm('У таблиці вже є дані.\n\nOK: завантажити їх у застосунок (локальні дані будуть замінені).\nСкасувати: замінити таблицю даними із застосунку.');
+  if(remoteHas)pull=!localHas||SY.auto||confirm('У таблиці вже є дані.\n\nOK: завантажити їх у застосунок (локальні дані будуть замінені).\nСкасувати: замінити таблицю даними із застосунку.');
   if(pull){applyRemote(T);SY.queue=[]}else syPushAll();
   SY.inited=true;sySave();
   await syFlush();
@@ -923,6 +929,7 @@ $('#syConnect').onclick=async()=>{
   SY.url=url;SY.token=tok;st.textContent='Перевірка…';
   try{await syFetch('GET','ping')}
   catch(e){SY.url=old.url;SY.token=old.token;st.textContent='⚠ '+e.message;st.className='mute err';return}
+  delete SY.auto;delete SY.off;
   if(old.url!==url)SY.inited=false;
   sySave();syncNow();
 };
@@ -939,7 +946,7 @@ $('#syPull').onclick=async()=>{
 };
 $('#syOff').onclick=()=>{
   if(!confirm('Відключити синхронізацію? Дані в застосунку залишаться.'))return;
-  SY={queue:[],base:{}};sySave();$('#syUrl').value=$('#syTok').value='';syRender();
+  SY={queue:[],base:{},off:true};sySave();$('#syUrl').value=$('#syTok').value='';syRender();
 };
 addEventListener('online',syncNow);
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&Date.now()-(SY.last||0)>30000)syncNow()});
