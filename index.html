@@ -100,9 +100,10 @@ svg text{fill:var(--mute);font-size:10px}
     <div class="bar" id="bar"><i></i></div>
     <div id="hint"></div>
     <div class="row" style="margin-top:10px">
-      <div class="mute">Вага, кг</div>
+      <div class="mute" id="wLbl">Вага, кг</div>
       <input id="weight" type="number" step="0.1" inputmode="decimal" placeholder="—">
     </div>
+    <div class="mute" id="wHint" style="margin-top:6px"></div>
   </div>
 
   <div class="card">
@@ -363,6 +364,11 @@ function renderDay(){
   $('#bar').className='bar'+(goal&&tot>goal?' over':'');
   $('#bar').firstChild.style.width=(goal?Math.min(100,tot/goal*100):0)+'%';
   if(document.activeElement!==$('#weight'))$('#weight').value=S.weights[cur]??'';
+  // зважування раз на тиждень (неділя): у решту днів показується останнє зважування
+  const wOwn=S.weights[cur],wa=weightAt(cur),sun=wdi(cur)===6;
+  $('#weight').placeholder=wa?String(wa.kg).replace('.',','):'—';
+  $('#wLbl').textContent=sun?'Вага, кг · неділя':'Вага, кг';
+  $('#wHint').textContent=wOwn?'':(sun?'Неділя: час зважитись. ':'')+(wa?`Показано вагу з ${dm(wa.d)}: ${wa.kg} кг.`:(sun?'':'Зважування ще не було.'));
 
   $('#meals').innerHTML=MEALS.map(m=>`<button class="chip${m===meal?' on':''}" data-meal="${m}">${m}</button>`).join('');
   $('#tpls').innerHTML=S.templates.length?S.templates.map(t=>`<button class="chip t" data-apply="${t.id}">＋ ${esc(t.n)} · ${Math.round(tplK(t))}</button>`).join(''):'';
@@ -437,13 +443,17 @@ function barChart(bars,goal,ma){
   }
   return o+'</svg>';
 }
+const wList=()=>Object.entries(S.weights).sort((a,b)=>a[0]<b[0]?-1:1);
+function weightAt(d){const p=wList().filter(([k])=>k<=d).pop();return p?{d:p[0],kg:p[1]}:null}
 function weightSvg(pts){
   const W=340,H=120,pad=20;
   const ws=pts.map(p=>p[1]),mn=Math.min(...ws)-.3,mx=Math.max(...ws)+.3;
   const t0=new Date(pts[0][0]).getTime(),t1=new Date(pts[pts.length-1][0]).getTime();
   const X=d=>pad+(new Date(d).getTime()-t0)/Math.max(t1-t0,1)*(W-pad*2);
   const Y=v=>H-pad-(v-mn)/(mx-mn)*(H-pad*2);
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%"><polyline points="${pts.map(p=>X(p[0])+','+Y(p[1])).join(' ')}" fill="none" stroke="var(--acc)" stroke-width="2"/>`+
+  // ступінчаста лінія: вага тримається до наступного зважування
+  const path=pts.map((p,i)=>i?`H${X(p[0])} V${Y(p[1])}`:`M${X(p[0])} ${Y(p[1])}`).join(' ');
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%"><path d="${path}" fill="none" stroke="var(--acc)" stroke-width="2"/>`+
     pts.map(p=>`<circle cx="${X(p[0])}" cy="${Y(p[1])}" r="3" fill="var(--acc)"/>`).join('')+
     `<text x="2" y="${Y(Math.max(...ws))-6}">${Math.max(...ws)}</text><text x="2" y="${Y(Math.min(...ws))+14}">${Math.min(...ws)}</text>`+
     `<text x="${pad}" y="${H-3}">${dm(pts[0][0])}</text><text x="${W-pad}" y="${H-3}" text-anchor="end">${dm(pts[pts.length-1][0])}</text></svg>`;
@@ -525,24 +535,35 @@ function renderAn(){
   if(ctRows.length>1)h+=`<div class="card"><h2>По категоріях</h2>${ctRows.map(([c,v])=>hbar(c,v/ctRows[0][1]*100,`${Math.round(v/gt*100)}% · ${Math.round(v/n)}/день`)).join('')}</div>`;
   if(tp.length)h+=`<div class="card"><h2>Що дає найбільше калорій</h2>${tp.map(p=>hbar(p.n,p.k/tp[0].k*100,`${Math.round(p.k)} · ${p.c}×`)).join('')}</div>`;
 
-  const wp=Object.entries(S.weights).filter(([d])=>d>=R.s&&d<=R.e).sort((a,b)=>a[0]<b[0]?-1:1);
-  h+=`<div class="card"><h2>Вага</h2>`;
+  // вага: зважування раз на тиждень, графік показує останні 12 зважувань до кінця періоду
+  const wAll=wList().filter(([d])=>d<=R.e),wp=aP==='all'?wAll:wAll.slice(-12);
+  h+=`<div class="card"><h2>Вага (зважування раз на тиждень)</h2>`;
   if(wp.length>=2){
-    const f=wp[0][1],l=wp[wp.length-1][1];
-    h+=weightSvg(wp)+`<div class="grid" style="margin-top:10px"><div><b>${l} кг</b><span>останнє</span></div><div><b>${r1(avgOf(wp.map(x=>x[1])))}</b><span>середня</span></div><div><b>${sgn(r1(l-f))}</b><span>зміна за період</span></div></div>`;
+    const [ld,l]=wp[wp.length-1],[pd,pk]=wp[wp.length-2];
+    const inP=ld>=R.s,base=wAll.filter(([d])=>d<R.s).pop()||wp[0];
+    const days=Math.round((new Date(ld+'T12:00')-new Date(base[0]+'T12:00'))/864e5);
+    const dPer=r1(l-base[1]),rate=inP&&days>=7?r1(dPer/days*7):null;
+    h+=weightSvg(wp)+`<div class="grid" style="margin-top:10px">
+      <div><b>${l} кг</b><span>зважування ${dm(ld)}</span></div>
+      <div><b>${sgn(r1(l-pk))}</b><span>до ${dm(pd)}</span></div>
+      ${inP?`<div><b>${sgn(dPer)}</b><span>за період</span></div>`:''}
+      ${rate!=null?`<div><b>${sgn(rate)}</b><span>кг на тиждень</span></div>`:''}</div>`;
+  }else if(wp.length){
+    h+=`<div class="grid"><div><b>${wp[0][1]} кг</b><span>зважування ${dm(wp[0][0])}</span></div></div><div class="mute" style="margin-top:8px">Потрібне ще одне зважування, щоб побачити динаміку.</div>`;
   }else{
-    h+=`<div class="mute">${wp.length?`Одне зважування: ${wp[0][1]} кг. Потрібне ще одне, щоб побачити динаміку.`:'У цьому періоді немає зважувань.'}</div>`;
+    h+='<div class="mute">Зважувань ще немає. Вагу вводять у вкладці «День», раз на тиждень.</div>';
   }
   h+='</div>';
 
   if(aP!=='week'){
-    const rows=[];let pw=null;
+    const rows=[];
+    let pw=(wList().filter(([d])=>d<mondayOf(R.s)).pop()||[])[1]??null;   // останнє зважування до першого тижня
     for(let w=mondayOf(R.s);w<=R.e;w=addDays(w,7)){
       const wu=st.u.filter(d=>d>=w&&d<addDays(w,7)).map(d=>sum(by[d]));
-      const ww=Object.entries(S.weights).filter(([d])=>d>=w&&d<addDays(w,7)).map(x=>x[1]);
-      const aw=ww.length?avgOf(ww):null;
+      const ww=wList().filter(([d])=>d>=w&&d<addDays(w,7));
+      const aw=ww.length?ww[ww.length-1][1]:null;
       if(wu.length||aw!=null)rows.push(`<tr><td>${dm(w)}</td><td>${wu.length?Math.round(avgOf(wu)):'—'}</td><td>${aw!=null?r1(aw):'—'}</td><td>${aw!=null&&pw!=null?sgn(r1(aw-pw)):''}</td></tr>`);
-      pw=aw;
+      if(aw!=null)pw=aw;
     }
     if(rows.length>1)h+=`<div class="card"><h2>Тиждень за тижнем</h2><table class="tbl"><tr><th>з</th><th>ккал/день</th><th>вага, кг</th><th>Δ вага</th></tr>${rows.reverse().join('')}</table></div>`;
   }
