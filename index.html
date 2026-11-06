@@ -106,6 +106,13 @@ svg text{fill:var(--mute);font-size:10px}
 .calg button.sel{outline:2px solid var(--acc);outline-offset:1px}
 .calleg{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:12px;color:var(--mute);margin-top:12px}
 .calleg i{display:inline-block;width:12px;height:12px;border-radius:4px;vertical-align:-2px;margin-right:4px}
+#toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(62px + env(safe-area-inset-bottom));z-index:50;display:flex;align-items:center;gap:12px;background:var(--ink);color:var(--bg);border-radius:12px;padding:6px 6px 6px 14px;box-shadow:0 8px 24px #0004;font-size:14px;max-width:calc(100vw - 32px)}
+#toast span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#toast button{background:none;border:1px solid currentColor;color:inherit;font-weight:700;padding:5px 10px;white-space:nowrap}
+.hist .inc{color:var(--mute);font-size:12px;font-weight:400}
+.tbl td.up{color:var(--bad)}.tbl td.dn{color:var(--acc)}
+.ti{margin-bottom:6px}.ti input{margin-bottom:0}
+.ti input[readonly]{color:var(--mute)}
 </style>
 </head>
 <body>
@@ -187,7 +194,7 @@ svg text{fill:var(--mute);font-size:10px}
   </div>
   <div class="card">
     <h2>Шаблони</h2>
-    <div class="mute" style="margin-bottom:6px">Створюються кнопкою ★ біля прийому їжі в щоденнику.</div>
+    <div class="mute" style="margin-bottom:6px">Створюються кнопкою ★ біля прийому їжі в щоденнику. Тап по шаблону, щоб змінити.</div>
     <div id="tplList"></div>
   </div>
 </section>
@@ -235,6 +242,19 @@ svg text{fill:var(--mute);font-size:10px}
   <div class="row"><input id="eg" type="number" inputmode="decimal" placeholder="грам"><input id="ek" type="number" inputmode="decimal" placeholder="ккал"></div>
   <select id="em" style="margin-top:8px"></select>
   <div class="row"><button id="eDel">Видалити</button><button id="eCancel">Скасувати</button><button class="p" id="eSave">Зберегти</button></div>
+</dialog>
+
+<div id="toast" hidden><span></span><button>Скасувати</button></div>
+
+<dialog id="dt">
+  <h3>Шаблон</h3>
+  <input id="tn" placeholder="Назва">
+  <select id="tm"></select>
+  <div class="mute" style="margin-bottom:6px">Продукт · грами · ккал (для продуктів з бази рахуються самі)</div>
+  <div id="tItems"></div>
+  <button id="tAdd" style="width:100%;margin:2px 0 8px">+ Продукт</button>
+  <div class="mute" id="tSum"></div>
+  <div class="row" style="margin-top:10px"><button id="tDel">Видалити</button><button id="tCancel">Скасувати</button><button class="p" id="tSave">Зберегти</button></div>
 </dialog>
 
 <dialog id="cal">
@@ -474,11 +494,17 @@ function aRange(by){
   const ks=Object.keys(by).sort();
   return {s:ks[0]||today,e:today,label:'Весь час',prev:null};
 }
+// День, у якому менше 40% цілі, найімовірніше заповнений не до кінця: він не йде в середнє.
+const INC=0.4;
 function aStats(s,e,by){
-  const today=iso(new Date());
-  const ds=span(s,e).filter(d=>by[d]),past=ds.filter(d=>d!==today),u=past.length?past:ds;
+  const today=iso(new Date()),goal=+S.goal||0,first=Object.keys(by).sort()[0];
+  const all=span(s,e),ds=all.filter(d=>by[d]),past=ds.filter(d=>d!==today);
+  const inc=goal?past.filter(d=>sum(by[d])<goal*INC):[],full=past.filter(d=>!inc.includes(d));
+  const u=full.length?full:(past.length?past:ds);
   const tot=u.map(d=>sum(by[d]));
-  return {u,tot,avg:avgOf(tot),partialToday:past.length>0&&ds.includes(today)};
+  // пропущені дні: від першого запису взагалі до вчора, лише в межах періоду
+  const miss=first?all.filter(d=>d>=first&&d<today&&!by[d]):[];
+  return {u,tot,avg:avgOf(tot),partialToday:ds.includes(today)&&!u.includes(today),inc:full.length?inc:[],miss};
 }
 function barChart(bars,goal,ma){
   const W=340,H=150,pb=18,pt=12,n=bars.length,bw=W/n;
@@ -488,7 +514,7 @@ function barChart(bars,goal,ma){
   bars.forEach((b,i)=>{
     const x=i*bw;
     if(b.v){
-      o+=`<rect ${b.day?`data-day="${b.day}" style="cursor:pointer" `:''}x="${x+bw*.15}" y="${Y(b.v)}" width="${bw*.7}" height="${H-pb-Y(b.v)}" rx="2" fill="${goal&&b.v>goal?'var(--bad)':'var(--acc)'}"/>`;
+      o+=`<rect ${b.day?`data-day="${b.day}" style="cursor:pointer" `:''}${b.inc?'opacity=".35" ':''}x="${x+bw*.15}" y="${Y(b.v)}" width="${bw*.7}" height="${H-pb-Y(b.v)}" rx="2" fill="${goal&&b.v>goal?'var(--bad)':'var(--acc)'}"/>`;
       if(n<=10)o+=`<text x="${x+bw/2}" y="${Y(b.v)-3}" text-anchor="middle">${Math.round(b.v)}</text>`;
     }
     if(b.l)o+=`<text x="${x+bw/2}" y="${H-4}" text-anchor="middle">${b.l}</text>`;
@@ -525,7 +551,10 @@ function renderAn(){
   $('#aNav').hidden=aP==='all';$('#aNext').disabled=aO>=0;$('#aLabel').textContent=R.label;
   const st=aStats(R.s,R.e,by);
   if(!st.u.length){$('#aSub').textContent='';$('#aBody').innerHTML='<div class="card mute">У цьому періоді немає записів.</div>';return}
-  $('#aSub').textContent=`${st.u.length} дн. з записами`+(st.partialToday?' · сьогодні не враховано в середньому':'');
+  $('#aSub').textContent=[`${st.u.length} дн. враховано`,
+    st.inc.length?`${st.inc.length} неповн.`:'',
+    st.miss.length?`${st.miss.length} без записів`:'',
+    st.partialToday?'сьогодні не враховано':''].filter(Boolean).join(' · ');
   const pv=R.prev?aStats(R.prev.s,R.prev.e,by):null;
   const n=st.u.length,total=st.tot.reduce((a,b)=>a+b,0);
   const inGoal=goal?st.tot.filter(v=>v<=goal).length:0;
@@ -555,15 +584,17 @@ function renderAn(){
     bars.forEach((b,i)=>{if(i%step===0)b.l=dm(addDays(mondayOf(R.s),i*7))});
   }else{
     const days=span(R.s,R.e);
-    bars=days.map((d,i)=>({v:by[d]?sum(by[d]):null,day:by[d]?d:'',l:aP==='week'?WD[i]:(i%5===0?new Date(d+'T12:00').getDate():'')}));
+    bars=days.map((d,i)=>({v:by[d]?sum(by[d]):null,day:by[d]?d:'',inc:st.inc.includes(d),l:aP==='week'?WD[i]:(i%5===0?new Date(d+'T12:00').getDate():'')}));
     if(aP==='month')ma=bars.map((b,i)=>{const w=bars.slice(Math.max(0,i-6),i+1).filter(x=>x.v);return w.length>=3?avgOf(w.map(x=>x.v)):null});
   }
-  h+=`<div class="card"><h2>${aP==='all'?'Середнє за день по тижнях':'Калорії по днях'}</h2>${barChart(bars,goal,ma)}<div class="mute">${ma?'Тонка лінія: ковзне середнє за 7 днів. ':''}${aP==='all'?'':'Тап по стовпчику відкриває день.'}</div></div>`;
+  h+=`<div class="card"><h2>${aP==='all'?'Середнє за день по тижнях':'Калорії по днях'}</h2>${barChart(bars,goal,ma)}<div class="mute">${ma?'Тонка лінія: ковзне середнє за 7 днів. ':''}${st.inc.length&&aP!=='all'?'Бліді стовпчики: неповні дні. ':''}${aP==='all'?'':'Тап по стовпчику відкриває день.'}</div></div>`;
 
   const ins=[];
   if(goal){const pc=Math.round((st.avg/goal-1)*100);ins.push(`У середньому ${Math.round(st.avg)} ккал/день: ${Math.abs(pc)}% ${pc<=0?'нижче':'вище'} цілі.`)}
   if(goal&&n>=2)ins.push(`За ${n} дн. ${bal>=0?'недобір':'перебір'} відносно цілі: ${Math.abs(Math.round(bal))} ккал.`);
   if(streak>=2)ins.push(`Серія: ${streak} дн. поспіль у межах цілі.`);
+  if(st.miss.length)ins.push(`${st.miss.length} дн. без записів`+(st.miss.length<=5?` (${st.miss.map(dm).join(', ')})`:'')+': середнє рахується лише по заповнених днях.');
+  if(st.inc.length)ins.push(`${st.inc.length} дн. схожі на неповні (менше ${Math.round(goal*INC)} ккал) і не враховані в середньому: ${st.inc.map(dm).join(', ')}`);
 
   const ents=st.u.flatMap(d=>by[d]);
   const mt={};ents.forEach(e=>mt[e.m]=(mt[e.m]||0)+e.k);
@@ -574,6 +605,25 @@ function renderAn(){
   const pm={};ents.forEach(e=>{const k=e.n.trim().toLowerCase();const o=pm[k]=pm[k]||{n:e.n,k:0,c:0};o.k+=e.k;o.c++});
   const tp=Object.values(pm).sort((a,b)=>b.k-a.k).slice(0,8);
   if(tp.length)ins.push(`Топ-джерело калорій: ${esc(tp[0].n)} (${Math.round(tp[0].k/gt*100)}%).`);
+  let trHtml='';
+  // тренд продуктів: середні ккал/день від продукту зараз і в минулому періоді
+  if(pv&&pv.u.length){
+    const pn=pv.u.length,pp={};
+    pv.u.flatMap(d=>by[d]).forEach(e=>{const k=e.n.trim().toLowerCase();const o=pp[k]=pp[k]||{n:e.n,k:0};o.k+=e.k});
+    const ch=[...new Set([...Object.keys(pm),...Object.keys(pp)])].map(k=>{
+      const a=pm[k]?pm[k].k/n:0,b=pp[k]?pp[k].k/pn:0;return {n:(pm[k]||pp[k]).n,a,b,d:a-b};
+    }).filter(x=>Math.abs(x.d)>=15).sort((x,y)=>Math.abs(y.d)-Math.abs(x.d)).slice(0,8);
+    const pct=x=>!x.b?'нове':!x.a?'зникло':sgn(Math.round((x.a/x.b-1)*100))+'%';
+    if(ch.length){
+      const prevL=aP==='week'?'минулого тижня':'минулого місяця';
+      trHtml=`<div class="card"><h2>Що змінилось порівняно з ${aP==='week'?'минулим тижнем':'минулим місяцем'}</h2><table class="tbl"><tr><th>продукт</th><th>було</th><th>стало</th><th>різниця</th></tr>`+
+        ch.map(x=>`<tr><td>${esc(x.n)}</td><td>${Math.round(x.b)}</td><td>${Math.round(x.a)}</td><td class="${x.d>0?'up':'dn'}">${sgn(Math.round(x.d))} <span class="mute">${pct(x)}</span></td></tr>`).join('')+
+        `</table><div class="mute" style="margin-top:6px">Середні ккал на день від продукту.</div></div>`;
+      const up=ch.find(x=>x.d>0),dn=ch.find(x=>x.d<0);
+      if(up)ins.push(`Більше, ніж ${prevL}: ${esc(up.n)} (${sgn(Math.round(up.d))} ккал/день, ${pct(up)}).`);
+      if(dn)ins.push(`Менше, ніж ${prevL}: ${esc(dn.n)} (${sgn(Math.round(dn.d))} ккал/день, ${pct(dn)}).`);
+    }
+  }
 
   let wdHtml='';
   if(aP!=='week'&&n>=7){
@@ -591,6 +641,8 @@ function renderAn(){
   const ctRows=Object.entries(ct).sort((a,b)=>b[1]-a[1]);
   if(ctRows.length>1)h+=`<div class="card"><h2>По категоріях</h2>${ctRows.map(([c,v])=>hbar(c,v/ctRows[0][1]*100,`${Math.round(v/gt*100)}% · ${Math.round(v/n)}/день`)).join('')}</div>`;
   if(tp.length)h+=`<div class="card"><h2>Що дає найбільше калорій</h2>${tp.map(p=>hbar(p.n,p.k/tp[0].k*100,`${Math.round(p.k)} · ${p.c}×`)).join('')}</div>`;
+
+  h+=trHtml;
 
   // вага: зважування раз на тиждень, графік показує останні 12 зважувань до кінця періоду
   const wAll=wList().filter(([d])=>d<=R.e),wp=aP==='all'?wAll:wAll.slice(-12);
@@ -625,7 +677,7 @@ function renderAn(){
     if(rows.length>1)h+=`<div class="card"><h2>Тиждень за тижнем</h2><table class="tbl"><tr><th>з</th><th>ккал/день</th><th>вага, кг</th><th>Δ вага</th></tr>${rows.reverse().join('')}</table></div>`;
   }
 
-  h+=`<div class="card"><h2>Дні</h2>${[...st.u].reverse().map(d=>{const t=sum(by[d]);return `<div class="hist" data-day="${d}"><span>${fmt(d)}</span><b${goal&&t>goal?' style="color:var(--bad)"':''}>${Math.round(t)}${S.weights[d]?` · ${S.weights[d]} кг`:''}</b></div>`}).join('')}</div>`;
+  h+=`<div class="card"><h2>Дні</h2>${[...st.u,...st.inc].sort().reverse().map(d=>{const t=sum(by[d]);return `<div class="hist" data-day="${d}"><span>${fmt(d)}${st.inc.includes(d)?' <span class="inc">· неповний</span>':''}</span><b${goal&&t>goal?' style="color:var(--bad)"':''}>${Math.round(t)}${S.weights[d]?` · ${S.weights[d]} кг`:''}</b></div>`}).join('')}</div>`;
   $('#aBody').innerHTML=h;
 }
 const catId=p=>S.cats.some(c=>c.id===p.c)?p.c:'';
@@ -644,7 +696,9 @@ function renderBase(){
         `<button class="x ic" data-prod="${i}" title="Редагувати"><svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>`+
         `<button class="x ic del" data-pdel="${i}" title="Видалити"><svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg></button></div>`).join('');
   }).join('')||'<div class="mute">Нічого не знайдено</div>';
-  $('#tplList').innerHTML=S.templates.map(t=>`<div class="it" style="cursor:default"><span>${esc(t.n)}</span><span class="g">${t.m}</span><b>${Math.round(tplK(t))}</b><button class="x" data-deltpl="${t.id}">✕</button></div>`).join('')||'<div class="mute">Шаблонів ще немає</div>';
+  $('#tplList').innerHTML=S.templates.map(t=>`<div class="it" data-tpl="${t.id}"><span>${esc(t.n)}</span><span class="g">${esc(t.m)} · ${t.items.length} прод.</span><b>${Math.round(tplK(t))}</b>`+
+    `<button class="x ic" data-tpl="${t.id}" title="Редагувати"><svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>`+
+    `<button class="x ic del" data-deltpl="${t.id}" title="Видалити"><svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg></button></div>`).join('')||'<div class="mute">Шаблонів ще немає</div>';
 }
 /* ---------- додавання ---------- */
 function syncUnit(){
@@ -662,11 +716,28 @@ function checkSave(){
 }
 function autofill(){
   const v=calc($('#n').value,curGrams());
-  if(v!=null&&!dirtyK)$('#k').value=v;
+  if(!dirtyK)$('#k').value=v??'';   // підставлене для іншого продукту не лишається; введене вручну не чіпаємо
   checkSave();
 }
-$('#n').addEventListener('input',()=>{dirtyK=false;syncUnit();autofill()});
-$('#g').addEventListener('input',autofill);
+// Звична порція: при виборі продукту грами (або штуки) підставляються з останнього разу.
+// Підставлене значення замінюється, якщо назву змінили; введене вручну не чіпається.
+let autoG=false;
+function lastUse(n){
+  const k=String(n).trim().toLowerCase();let b=null;
+  S.entries.forEach(e=>{if(e.n.trim().toLowerCase()===k&&(!b||e.d>b.d||(e.d===b.d&&e.id>b.id)))b=e});
+  return b;
+}
+function prefillPortion(){
+  if($('#g').value!==''&&!autoG)return;
+  const p=prod($('#n').value),l=p&&lastUse(p.n),sel=$('#gu');
+  let v='';
+  if(l&&l.q&&unitOf(p.n)){sel.value='u';v=l.q}
+  else if(l&&l.g){if(!sel.hidden)sel.value='g';v=l.g}
+  $('#g').value=v;autoG=v!=='';
+  $('#g').placeholder=sel.value==='u'?'кількість':'грам';
+}
+$('#n').addEventListener('input',()=>{dirtyK=false;syncUnit();prefillPortion();autofill()});
+$('#g').addEventListener('input',()=>{autoG=false;autofill()});
 $('#gu').addEventListener('change',()=>{syncUnit();autofill()});
 $('#k').addEventListener('input',()=>{dirtyK=true;checkSave()});
 function add(){
@@ -676,7 +747,7 @@ function add(){
   if(u&&c>0){en.q=c;en.u=u.n}
   S.entries.push(en);
   if(!$('#saveWrap').hidden&&$('#save').checked&&g)S.products.push({n,k:r1(k/g*100)});
-  save();$('#n').value=$('#g').value=$('#k').value='';dirtyK=false;syncUnit();
+  save();$('#n').value=$('#g').value=$('#k').value='';dirtyK=false;autoG=false;syncUnit();
   render();$('#n').focus();
 }
 function addQuick(){
@@ -744,9 +815,25 @@ function attachAC(inp,opts={}){
     const r=e.target.closest('[data-i]');if(r)pick(+r.dataset.i);
   });
 }
-attachAC($('#n'),{next:()=>$('#g').focus(),enter:add});
+attachAC($('#n'),{next:()=>{const g=$('#g');g.focus();try{g.select()}catch(_){}},enter:add});
 attachAC($('#en'),{next:()=>$('#eg').focus()});
 ['qk','qn'].forEach(id=>$('#'+id).addEventListener('keydown',e=>{if(e.key==='Enter')addQuick()}));
+
+/* ---------- видалення зі «Скасувати» ---------- */
+// Видаляє одразу й 6 секунд показує кнопку «Скасувати», яка повертає елемент на те саме місце.
+let undoT=null;
+function removeWithUndo(arr,item,label){
+  const i=S[arr].indexOf(item);if(i<0)return;
+  S[arr].splice(i,1);save();render();
+  const t=$('#toast');
+  t.querySelector('span').textContent='Видалено: '+label;t.hidden=false;
+  clearTimeout(undoT);undoT=setTimeout(()=>t.hidden=true,6000);
+  t.querySelector('button').onclick=()=>{
+    clearTimeout(undoT);t.hidden=true;
+    if(!S[arr].some(x=>String(x.id)===String(item.id)))S[arr].splice(Math.min(i,S[arr].length),0,item);
+    save();render();
+  };
+}
 
 /* ---------- шаблони ---------- */
 function applyTpl(id){
@@ -762,6 +849,52 @@ function saveTpl(m){
   S.templates.push({id:Date.now(),n,m,items});
   save();render();
 }
+
+/* ---------- редагування шаблону ---------- */
+// Ккал продукту з бази рахуються самі (поле лише для читання), як і при застосуванні шаблону.
+// Для продуктів не з бази або без грамів ккал вводять вручну.
+let tEdId=null;
+function tRow(i){
+  const c=i.n?calc(i.n,i.g):null,k=c??i.k;
+  return `<div class="row ti"><input class="tin" list="plist" placeholder="продукт" value="${esc(i.n||'')}">`+
+    `<input class="tig" type="number" inputmode="decimal" placeholder="г" value="${i.g??''}" style="flex:0 0 54px;min-width:0;padding:9px 6px">`+
+    `<input class="tik" type="number" inputmode="decimal" placeholder="ккал" value="${k!=null?r1(k):''}"${c!=null?' readonly':''} style="flex:0 0 60px;min-width:0;padding:9px 6px">`+
+    `<button class="x" data-tirm="1" title="Прибрати" style="flex:0 0 auto">✕</button></div>`;
+}
+function tSum(){
+  const k=[...document.querySelectorAll('#tItems .tik')].reduce((s,x)=>s+(+x.value||0),0);
+  $('#tSum').textContent=`Разом: ${Math.round(k)} ккал`;
+}
+function openTpl(id){
+  const t=S.templates.find(x=>x.id==id);if(!t)return;
+  tEdId=t.id;$('#tn').value=t.n;
+  $('#tm').innerHTML=MEALS.map(m=>`<option${m===t.m?' selected':''}>${m}</option>`).join('');
+  $('#tItems').innerHTML=t.items.map(tRow).join('');
+  tSum();$('#dt').showModal();
+}
+$('#tItems').addEventListener('input',e=>{
+  const r=e.target.closest('.ti');if(!r)return;
+  if(!e.target.matches('.tik')){
+    const kk=r.querySelector('.tik'),c=calc(r.querySelector('.tin').value,+r.querySelector('.tig').value);
+    kk.readOnly=c!=null;if(c!=null)kk.value=c;
+  }
+  tSum();
+});
+$('#tItems').addEventListener('click',e=>{const b=e.target.closest('[data-tirm]');if(b){b.closest('.ti').remove();tSum()}});
+$('#tAdd').onclick=()=>{$('#tItems').insertAdjacentHTML('beforeend',tRow({}));$('#tItems .ti:last-child .tin').focus()};
+$('#tSave').onclick=()=>{
+  const t=S.templates.find(x=>x.id==tEdId);if(!t)return;
+  const n=$('#tn').value.trim();if(!n){$('#tn').focus();return}
+  const items=[...document.querySelectorAll('#tItems .ti')].map(r=>{
+    const nm=r.querySelector('.tin').value.trim(),g=+r.querySelector('.tig').value||null,k=calc(nm,g)??(+r.querySelector('.tik').value||null);
+    return nm&&k!=null?{n:nm,g,k}:null;
+  }).filter(Boolean);
+  if(!items.length){alert('Додайте хоча б один продукт з калоріями.');return}
+  t.n=n;t.m=$('#tm').value;t.items=items;
+  save();$('#dt').close();render();
+};
+$('#tDel').onclick=()=>{const t=S.templates.find(x=>x.id==tEdId);$('#dt').close();if(t)removeWithUndo('templates',t,`шаблон «${t.n}»`)};
+$('#tCancel').onclick=()=>$('#dt').close();
 
 /* ---------- редагування запису ---------- */
 let eDirty=false;
@@ -789,7 +922,7 @@ $('#eSave').onclick=()=>{
   e.n=$('#en').value.trim()||e.n;e.g=ng;e.k=+$('#ek').value||0;e.m=$('#em').value;
   save();$('#de').close();render();
 };
-$('#eDel').onclick=()=>{S.entries=S.entries.filter(x=>x.id!=edId);save();$('#de').close();render()};
+$('#eDel').onclick=()=>{const x=S.entries.find(z=>z.id==edId);$('#de').close();if(x)removeWithUndo('entries',x,x.n)};
 $('#eCancel').onclick=()=>$('#de').close();
 
 /* ---------- продукти ---------- */
@@ -822,12 +955,12 @@ $('#pSave').onclick=()=>{
   if(old){p.id=old.id;S.products[pIdx]=p}else S.products.push(p);
   save();$('#dp').close();render();
 };
-$('#pDel').onclick=()=>{S.products.splice(pIdx,1);save();$('#dp').close();render()};
+$('#pDel').onclick=()=>{const p=S.products[pIdx];$('#dp').close();if(p)removeWithUndo('products',p,p.n)};
 $('#pCancel').onclick=()=>$('#dp').close();
 
 /* ---------- події ---------- */
 document.addEventListener('click',e=>{
-  const b=e.target.closest('[data-meal],[data-tab],[data-d],[data-mode],[data-apply],[data-savetpl],[data-deltpl],[data-edit],[data-prod],[data-newp],[data-day],[data-ap],[data-ao],[data-copy],[data-catup],[data-catdn],[data-catdel],[data-pdel],[data-del],[data-sync]');
+  const b=e.target.closest('[data-meal],[data-tab],[data-d],[data-mode],[data-apply],[data-savetpl],[data-deltpl],[data-tpl],[data-edit],[data-prod],[data-newp],[data-day],[data-ap],[data-ao],[data-copy],[data-catup],[data-catdn],[data-catdel],[data-pdel],[data-del],[data-sync]');
   if(!b)return;const d=b.dataset;
   if(d.meal){meal=d.meal;renderDay()}
   else if(d.tab){
@@ -852,16 +985,11 @@ document.addEventListener('click',e=>{
   else if(d.mode){mode=d.mode;renderDay()}
   else if(d.apply)applyTpl(d.apply);
   else if(d.savetpl)saveTpl(d.savetpl);
-  else if(d.deltpl){S.templates=S.templates.filter(t=>t.id!=d.deltpl);save();render()}
-  else if(d.del){
-    const x=S.entries.find(z=>z.id==d.del);
-    if(x&&confirm(`Видалити «${x.n}» (${Math.round(x.k)} ккал)?`)){S.entries=S.entries.filter(z=>z.id!=d.del);save();render()}
-  }
+  else if(d.deltpl){const t=S.templates.find(x=>x.id==d.deltpl);if(t)removeWithUndo('templates',t,`шаблон «${t.n}»`)}
+  else if(d.tpl)openTpl(d.tpl);
+  else if(d.del){const x=S.entries.find(z=>z.id==d.del);if(x)removeWithUndo('entries',x,`${x.n} · ${Math.round(x.k)} ккал`)}
   else if(d.edit)openEdit(d.edit);
-  else if(d.pdel!==undefined){
-    const p=S.products[+d.pdel];
-    if(p&&confirm(`Видалити продукт «${p.n}»? Записи в щоденнику залишаться.`)){S.products.splice(+d.pdel,1);save();render()}
-  }
+  else if(d.pdel!==undefined){const p=S.products[+d.pdel];if(p)removeWithUndo('products',p,p.n)}
   else if(d.prod!==undefined)openProd(+d.prod);
   else if(d.newp)openProd(-1);
   else if(d.day){cur=d.day;render();document.querySelector('[data-tab="day"]').click()}
