@@ -222,8 +222,6 @@ svg text{fill:var(--mute);font-size:10px}
   <select id="pc"></select>
   <div class="row"><input id="pk" type="number" inputmode="decimal" placeholder="ккал / 100 г"><input id="pp" type="number" inputmode="decimal" placeholder="ккал / порція"></div>
   <div class="mute" style="margin:6px 0 10px">Страву (суп, запіканку) додавайте як звичайний продукт: ккал на 100 г готової страви.</div>
-  <div class="mute" style="margin-bottom:4px">Порція в штуках (необов'язково): 1 одиниця = N г</div>
-  <div class="row"><input id="pu" placeholder="одиниця: шт, скибка…"><input id="pug" type="number" inputmode="decimal" placeholder="г в одній"></div>
   <div class="row" style="margin-top:8px"><button id="pDel">Видалити</button><button id="pCancel">Скасувати</button><button class="p" id="pSave">Зберегти</button></div>
 </dialog>
 
@@ -582,7 +580,9 @@ function renderBase(){
   $('#prods').innerHTML=[...S.cats.map(c=>[c.n,c.id]),['Без категорії','']].map(([n,id])=>{
     const l=list.filter(x=>catId(x.p)===id);if(!l.length)return'';
     return `<div class="grp"><span>${esc(n)}</span><span>${l.length}</span></div>`+
-      l.map(({p,i})=>`<div class="it" data-prod="${i}"><span>${esc(p.n)}</span><span class="g">${plabel(p)}</span></div>`).join('');
+      l.map(({p,i})=>`<div class="it" data-prod="${i}"><span>${esc(p.n)}</span><span class="g">${plabel(p)}</span>`+
+        `<button class="x ic" data-prod="${i}" title="Редагувати"><svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>`+
+        `<button class="x ic del" data-pdel="${i}" title="Видалити"><svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg></button></div>`).join('');
   }).join('')||'<div class="mute">Нічого не знайдено</div>';
   $('#tplList').innerHTML=S.templates.map(t=>`<div class="it" style="cursor:default"><span>${esc(t.n)}</span><span class="g">${t.m}</span><b>${Math.round(tplK(t))}</b><button class="x" data-deltpl="${t.id}">✕</button></div>`).join('')||'<div class="mute">Шаблонів ще немає</div>';
 }
@@ -729,7 +729,6 @@ function openProd(i){
   pIdx=i;const p=i>=0?S.products[i]:null;
   $('#dpT').textContent=p?'Редагувати':'Новий продукт';
   $('#pn').value=p?p.n:'';$('#pk').value=p&&p.k!=null?p.k:'';$('#pp').value=p&&p.p!=null?p.p:'';
-  $('#pu').value=p&&p.u?p.u.n:'';$('#pug').value=p&&p.u?p.u.g:'';
   $('#pc').innerHTML='<option value="">Без категорії</option>'+S.cats.map(c=>`<option value="${c.id}">${esc(c.n)}</option>`).join('');
   $('#pc').value=p?catId(p):'';
   $('#pDel').hidden=!p;$('#dp').showModal();
@@ -742,7 +741,7 @@ $('#pSave').onclick=()=>{
   const p={n,k,...(pp!=null?{p:pp}:{})};
   if(old&&old.r){p.r=old.r;if(old.w!=null)p.w=old.w}   // склад зі старих даних не губимо
   if($('#pc').value)p.c=$('#pc').value;
-  if(+$('#pug').value>0)p.u={n:$('#pu').value.trim()||'шт',g:+$('#pug').value};
+  if(old&&old.u)p.u=old.u;   // збережена одиниця (наприклад, шт = 150 г) лишається, але в діалозі її більше не редагують
   if(old){p.id=old.id;S.products[pIdx]=p}else S.products.push(p);
   save();$('#dp').close();render();
 };
@@ -751,7 +750,7 @@ $('#pCancel').onclick=()=>$('#dp').close();
 
 /* ---------- події ---------- */
 document.addEventListener('click',e=>{
-  const b=e.target.closest('[data-meal],[data-tab],[data-d],[data-mode],[data-apply],[data-savetpl],[data-deltpl],[data-edit],[data-prod],[data-newp],[data-day],[data-ap],[data-ao],[data-copy],[data-catup],[data-catdn],[data-catdel],[data-del],[data-sync]');
+  const b=e.target.closest('[data-meal],[data-tab],[data-d],[data-mode],[data-apply],[data-savetpl],[data-deltpl],[data-edit],[data-prod],[data-newp],[data-day],[data-ap],[data-ao],[data-copy],[data-catup],[data-catdn],[data-catdel],[data-pdel],[data-del],[data-sync]');
   if(!b)return;const d=b.dataset;
   if(d.meal){meal=d.meal;renderDay()}
   else if(d.tab){
@@ -782,6 +781,10 @@ document.addEventListener('click',e=>{
     if(x&&confirm(`Видалити «${x.n}» (${Math.round(x.k)} ккал)?`)){S.entries=S.entries.filter(z=>z.id!=d.del);save();render()}
   }
   else if(d.edit)openEdit(d.edit);
+  else if(d.pdel!==undefined){
+    const p=S.products[+d.pdel];
+    if(p&&confirm(`Видалити продукт «${p.n}»? Записи в щоденнику залишаться.`)){S.products.splice(+d.pdel,1);save();render()}
+  }
   else if(d.prod!==undefined)openProd(+d.prod);
   else if(d.newp)openProd(-1);
   else if(d.day){cur=d.day;render();document.querySelector('[data-tab="day"]').click()}
