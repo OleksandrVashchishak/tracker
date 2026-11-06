@@ -173,8 +173,10 @@ svg text{fill:var(--mute);font-size:10px}
     <div class="row" style="margin-top:8px"><button class="p" id="syConnect">Підключити</button><button id="syNow">Синхронізувати</button></div>
     <div class="mute" id="syState" style="margin-top:8px"></div>
     <details style="margin-top:8px"><summary class="mute" style="cursor:pointer">Додатково</summary>
-      <div class="row" style="margin-top:8px"><button id="syPush">Замінити таблицю моїми даними</button><button id="syPull">Замінити мої дані таблицею</button></div>
-      <button id="syOff" style="margin-top:8px;width:100%">Відключити</button>
+      <div class="mute" style="margin:8px 0 4px">Якщо щось пішло не так:</div>
+      <button id="syUndo" style="width:100%;margin-bottom:8px">Додати втрачене з попереднього стану цього пристрою</button>
+      <div class="row"><button id="syForce">Відправити зміни попри захист</button><button id="syPull">Замінити мої дані таблицею</button></div>
+      <div class="row" style="margin-top:8px"><button id="syPush">Замінити таблицю моїми даними</button><button id="syOff">Відключити</button></div>
     </details>
   </div>
   <div class="card">
@@ -264,6 +266,7 @@ function seed(){
   a(d,'Солодке','Печиво',50,188);a(d,'Солодке','Яблуко середнє',null,80);
   a(d,'Інше','Сухарики',null,200);
   return {
+    pristine:true,
     goal:1500,
     products:[
       {n:'Кава',k:null,p:50},{n:'Сметана',k:49,p:32},
@@ -313,10 +316,11 @@ function load(){
   }catch(e){}
   return migrate(seed());
 }
-function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}syncSchedule()}
+function save(){delete S.pristine;try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}syncSchedule()}
 
 let S=load(),cur=iso(new Date()),meal=(()=>{const h=new Date().getHours();return h<10?'Сніданок':h<15?'Обід':h<20?'Вечеря':'Інше'})();
 let mode='prod',dirtyK=false,edId=null,pIdx=-1,pMode='simple';
+try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}
 
 const dayEntries=d=>S.entries.filter(e=>e.d===d);
 const sum=a=>a.reduce((t,e)=>t+e.k,0);
@@ -792,20 +796,33 @@ $('#file').onchange=async e=>{
 };
 
 /* ---------- синхронізація з Google Таблицею ---------- */
-// Кожне збереження порівнюється з останнім відомим станом; різниця йде в чергу
-// і відправляється у фоні. Без інтернету черга чекає і зберігається в браузері.
-const SYNC_KEY='kcal-sync',J=JSON.stringify;
+// Безпечна схема:
+//  - зміни рахуються як різниця з останнім відомим станом і йдуть у чергу (лише set/del по рядках);
+//  - сервер веде версію таблиці (rev): пристрій пише, лише якщо бачив останню версію,
+//    інакше він спершу підтягує нове й накладає на нього свої зміни;
+//  - автоматично ніколи не робиться «замінити все» і не застосовуються дані, що виглядають як втрата;
+//  - перед кожною зміною локальних даних із таблиці старий стан зберігається (його можна повернути).
+const APP_V='3',SYNC_KEY='kcal-sync',PREV_KEY='kcal-prev',J=JSON.stringify;
 let SY=(()=>{try{return JSON.parse(localStorage.getItem(SYNC_KEY))||{}}catch(e){return{}}})();
 SY.queue=SY.queue||[];SY.base=SY.base||{};
+// Застарілі «замінити все» з черги небезпечні: це знімки старого стану. Викидаємо їх і зводимо дані заново.
+if(SY.queue.some(o=>o.op==='replace')){SY.queue=SY.queue.filter(o=>o.op!=='replace');SY.inited=false;SY.base={}}
+SY.dev=SY.dev||('d'+Math.random().toString(36).slice(2,8));
 // Підключення за замовчуванням: новий пристрій з'єднується з таблицею сам, без ручного введення.
 const DEFAULT_SYNC={
   url:'https://script.google.com/macros/s/AKfycbyrn9v7M7xVGFwxT49InpXosNyZR_Y08Rm4TixrNrYpT-pULt87ry7Vxhh8bYb4slNI8Q/exec',
   token:'qwertyasdfghzxcvbqazwsxedcrfv'
 };
-if(!SY.url&&!SY.off){SY.url=DEFAULT_SYNC.url;SY.token=DEFAULT_SYNC.token;SY.auto=true}
+if(!SY.url&&!SY.off){SY.url=DEFAULT_SYNC.url;SY.token=DEFAULT_SYNC.token}
 let syBusy=false,syRunning=false,syInflight=0,syTimer=null,syErr='',syVer=0;
 const sySave=()=>{try{localStorage.setItem(SYNC_KEY,J(SY))}catch(e){}};
 const parseJ=s=>{try{return s?JSON.parse(s):null}catch(e){return null}};
+const SY_MSG={
+  auth:'невірний токен',
+  stale:'таблиця змінилась',
+  too_many_deletes:'захист: забагато видалень, зміни не відправлено',
+  forbidden_replace:'захист: заміну всієї таблиці заборонено'
+};
 const KEYF={entries:'id',products:'id',cats:'id',templates:'id',weights:'d',settings:'key'};
 const rowsOf={
   entries:()=>S.entries.map(e=>({id:e.id,d:e.d,m:e.m,n:e.n,g:e.g??null,q:e.q??null,u:e.u??null,k:e.k})),
@@ -815,6 +832,20 @@ const rowsOf={
   weights:()=>Object.entries(S.weights).map(([d,kg])=>({d,kg})),
   settings:()=>[{key:'goal',value:+S.goal||0,note:'Денна ціль, ккал'}]
 };
+const fromRow={
+  entries:r=>{const e={id:r.id,d:String(r.d),m:r.m,n:r.n,g:r.g,k:+r.k||0};if(r.q!=null){e.q=r.q;e.u=r.u}return e},
+  products:r=>{
+    const p={id:String(r.id),n:r.n,k:r.k};
+    if(r.p!=null)p.p=r.p;
+    if(r.u!=null&&r.ug)p.u={n:r.u,g:r.ug};
+    if(r.c)p.c=String(r.c);
+    const rc=parseJ(r.r);if(rc)p.r=rc;
+    if(r.w!=null)p.w=r.w;
+    return p;
+  },
+  cats:r=>({id:String(r.id),n:r.n}),
+  templates:r=>({id:r.id,n:r.n,m:r.m,items:parseJ(r.items)||[]})
+};
 function snapshot(){
   S.products.forEach(p=>{if(!p.id)p.id=uid()});
   const o={};
@@ -823,10 +854,8 @@ function snapshot(){
 }
 const syQKey=o=>o.op==='del'?String(o.key):String(o.row[KEYF[o.t]]);
 function syEnqueue(op){
-  if(op.op!=='replace'){
-    const k=syQKey(op);
-    SY.queue=SY.queue.filter((q,i)=>i<syInflight||q.t!==op.t||q.op==='replace'||syQKey(q)!==k);
-  }
+  const k=syQKey(op);
+  SY.queue=SY.queue.filter((q,i)=>i<syInflight||q.t!==op.t||syQKey(q)!==k);
   SY.queue.push(op);
 }
 function syDiff(){
@@ -839,17 +868,54 @@ function syDiff(){
   }
   SY.base=cur;ops.forEach(syEnqueue);sySave();syRender();
 }
-function syPushAll(){
-  SY.queue=[];syInflight=0;
-  S.products.forEach(p=>{if(!p.id)p.id=uid()});
-  for(const t in rowsOf)SY.queue.push({t,op:'replace',rows:rowsOf[t]()});
-  SY.base=snapshot();sySave();
+// Накласти одну операцію з черги на локальні дані (для злиття після підтягування нового)
+function applyOp(op){
+  if(op.op==='replace')return;
+  const t=op.t;
+  if(t==='weights'){if(op.op==='set')S.weights[String(op.row.d)]=+op.row.kg;else delete S.weights[String(op.key)];return}
+  if(t==='settings'){if(op.op==='set'&&op.row.key==='goal'&&+op.row.value)S.goal=+op.row.value;return}
+  const arr=S[t],k=op.op==='del'?String(op.key):String(op.row.id);
+  const i=arr.findIndex(x=>String(x.id)===k);
+  if(op.op==='del'){if(i>=0)arr.splice(i,1);return}
+  const obj=fromRow[t](op.row);
+  if(i>=0)arr[i]=obj;else arr.push(obj);
 }
-function syncSchedule(){
-  syVer++;
-  if(!SY.url||!SY.inited)return;
-  clearTimeout(syTimer);
-  syTimer=setTimeout(()=>{syDiff();syFlush()},700);
+// Додати до S те, чого в S ще немає (нічого не видаляє і не перезаписує)
+function mergeLocal(m){
+  const has=(arr,x)=>arr.some(y=>String(y.id)===String(x.id));
+  m.entries.forEach(e=>{if(!has(S.entries,e))S.entries.push(e)});
+  m.products.forEach(p=>{if(!S.products.some(y=>y.n.toLowerCase()===p.n.toLowerCase()))S.products.push(p)});
+  m.cats.forEach(c=>{if(!has(S.cats,c))S.cats.push(c)});
+  m.templates.forEach(t=>{if(!has(S.templates,t))S.templates.push(t)});
+  for(const d in m.weights)if(!(d in S.weights))S.weights[d]=m.weights[d];
+}
+// Дані з таблиці виглядають як втрата (набагато менше, ніж у нас, або порожньо)
+function looksLost(T){
+  const le=S.entries.length,re=T.entries.length,lp=S.products.length,rp=T.products.length;
+  if(!re&&!rp&&(le||lp))return true;
+  return (le>=10&&re<le*0.7)||(lp>=8&&rp<lp*0.5);
+}
+function pushPrev(old){
+  try{
+    const arr=JSON.parse(localStorage.getItem(PREV_KEY)||'[]');
+    arr.unshift({t:Date.now(),s:old});
+    localStorage.setItem(PREV_KEY,J(arr.slice(0,3)));
+  }catch(e){}
+}
+function persistS(){try{localStorage.setItem(KEY,J(S))}catch(e){}}
+
+function applyRemote(T){
+  const old=J(S),oldSnap=J(snapshot());
+  S.entries=T.entries.map(fromRow.entries);
+  S.products=T.products.map(fromRow.products);
+  S.cats=[...T.cats].sort((a,b)=>(a.o||0)-(b.o||0)).map(fromRow.cats);
+  S.templates=T.templates.map(fromRow.templates);
+  S.weights={};T.weights.forEach(r=>{S.weights[String(r.d)]=+r.kg});
+  const g=T.settings.find(r=>r.key==='goal');if(g&&+g.value)S.goal=+g.value;
+  delete S.pristine;
+  SY.base=snapshot();
+  if(J(SY.base)!==oldSnap)pushPrev(old);   // стан змінився: попередній лишається для відкату
+  sySave();persistS();render();
 }
 
 async function syFetch(method,arg){
@@ -857,58 +923,78 @@ async function syFetch(method,arg){
   try{
     const res=method==='GET'
       ?await fetch(SY.url+(SY.url.includes('?')?'&':'?')+'action='+arg+'&token='+encodeURIComponent(SY.token),{signal:ctl.signal})
-      :await fetch(SY.url,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:J({token:SY.token,ops:arg}),signal:ctl.signal});
+      :await fetch(SY.url,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:J({token:SY.token,...arg}),signal:ctl.signal});
     const j=await res.json();
-    if(!j.ok)throw new Error(j.error==='auth'?'невірний токен':(j.error||'помилка таблиці'));
+    if(!j.ok){const err=new Error(SY_MSG[j.error]||j.error||'помилка таблиці');err.code=j.error;err.data=j;throw err}
     return j;
   }catch(e){
     if(e.name==='AbortError')throw new Error('немає відповіді');
     if(e instanceof TypeError)throw new Error("немає зв'язку");
+    if(e instanceof SyntaxError)throw new Error('таблиця відповіла не так, як очікувалось');
     throw e;
   }finally{clearTimeout(to)}
 }
+const syPost=(ops,force)=>syFetch('POST',{ops,baseRev:SY.rev,dev:SY.dev,v:APP_V,force:!!force});
 
-async function syFlush(){
+// Пристрій відстав від таблиці: підтягнути нове й накласти поверх свої ще не відправлені зміни
+async function syRebase(){
+  const ops=SY.queue.slice();
+  const j=await syFetch('GET','pull');
+  if(looksLost(j.tables))throw new Error('захист: у таблиці помітно менше даних, ніж у вас');
+  SY.queue=[];syInflight=0;
+  applyRemote(j.tables);
+  SY.rev=j.rev;SY.bk=j.lastBackup;
+  ops.forEach(applyOp);
+  persistS();syDiff();render();
+}
+
+async function syFlush(force){
   if(syBusy||!SY.url)return;
   syBusy=true;syRender();
   try{
-    while(SY.queue.length){
-      syInflight=Math.min(SY.queue.length,200);
-      await syFetch('POST',SY.queue.slice(0,syInflight));
-      SY.queue.splice(0,syInflight);syInflight=0;sySave();
+    for(let attempt=0;attempt<3;attempt++){
+      try{
+        while(SY.queue.length){
+          syInflight=Math.min(SY.queue.length,200);
+          const j=await syPost(SY.queue.slice(0,syInflight),force);
+          SY.queue.splice(0,syInflight);syInflight=0;
+          if(j.rev!=null)SY.rev=j.rev;
+          sySave();
+        }
+        syErr='';SY.last=Date.now();sySave();
+        break;
+      }catch(e){
+        syInflight=0;
+        if(e.code==='stale'&&attempt<2){await syRebase();continue}
+        syErr=e.message;break;
+      }
     }
-    syErr='';SY.last=Date.now();sySave();
-  }catch(e){syInflight=0;syErr=e.message}
+  }catch(e){syErr=e.message}
   finally{syBusy=false;syRender()}
 }
 
-function applyRemote(T){
-  S.entries=T.entries.map(r=>{const e={id:r.id,d:String(r.d),m:r.m,n:r.n,g:r.g,k:+r.k||0};if(r.q!=null){e.q=r.q;e.u=r.u}return e});
-  S.products=T.products.map(r=>{
-    const p={id:String(r.id),n:r.n,k:r.k};
-    if(r.p!=null)p.p=r.p;
-    if(r.u!=null&&r.ug)p.u={n:r.u,g:r.ug};
-    if(r.c)p.c=String(r.c);
-    const rc=parseJ(r.r);if(rc)p.r=rc;
-    if(r.w!=null)p.w=r.w;
-    return p;
-  });
-  S.cats=[...T.cats].sort((a,b)=>(a.o||0)-(b.o||0)).map(r=>({id:String(r.id),n:r.n}));
-  S.templates=T.templates.map(r=>({id:r.id,n:r.n,m:r.m,items:parseJ(r.items)||[]}));
-  S.weights={};T.weights.forEach(r=>{S.weights[String(r.d)]=+r.kg});
-  const g=T.settings.find(r=>r.key==='goal');if(g&&+g.value)S.goal=+g.value;
-  SY.base=snapshot();sySave();
-  try{localStorage.setItem(KEY,J(S))}catch(e){}
-  render();
+function syncSchedule(){
+  syVer++;
+  if(!SY.url||!SY.inited)return;
+  clearTimeout(syTimer);
+  syTimer=setTimeout(()=>{syDiff();syFlush()},700);
 }
 
+// Перше підключення пристрою: ніколи не замінює таблицю. Дані з таблиці беруться як основа,
+// а те, чого в ній немає, лише додається.
 async function syInit(){
-  const T=(await syFetch('GET','pull')).tables;
-  const remoteHas=T.entries.length||T.products.length,localHas=S.entries.length||S.products.length;
-  let pull=false;
-  if(remoteHas)pull=!localHas||SY.auto||confirm('У таблиці вже є дані.\n\nOK: завантажити їх у застосунок (локальні дані будуть замінені).\nСкасувати: замінити таблицю даними із застосунку.');
-  if(pull){applyRemote(T);SY.queue=[]}else syPushAll();
-  SY.inited=true;sySave();
+  const j=await syFetch('GET','pull'),T=j.tables;
+  const remoteHas=T.entries.length||T.products.length;
+  const realLocal=!S.pristine&&(S.entries.length||S.products.length);
+  SY.rev=j.rev;SY.bk=j.lastBackup;SY.inited=true;
+  if(remoteHas){
+    const mine=JSON.parse(J(S));
+    applyRemote(T);
+    if(realLocal){mergeLocal(mine);persistS();syDiff();render()}
+  }else{
+    SY.base={};syDiff();
+  }
+  sySave();
   await syFlush();
 }
 
@@ -921,10 +1007,10 @@ async function syncNow(){
       syDiff();
       await syFlush();
       if(!syErr&&!SY.queue.length){
-        const v0=syVer,T=(await syFetch('GET','pull')).tables;
+        const v0=syVer,j=await syFetch('GET','pull'),T=j.tables;
         if(syVer!==v0){syDiff();await syFlush()}   // за час запиту були зміни: не затираємо їх
-        else if(!T.entries.length&&!T.products.length&&(S.entries.length||S.products.length)){syPushAll();await syFlush()}   // таблицю очищено ззовні
-        else applyRemote(T);
+        else if(looksLost(T))syErr=`захист: у таблиці ${T.entries.length} записів, у вас ${S.entries.length}. Нічого не застосовано (Налаштування → Додатково)`;
+        else{SY.rev=j.rev;SY.bk=j.lastBackup;applyRemote(T)}
       }
     }
     if(!syErr){SY.last=Date.now();sySave()}
@@ -938,7 +1024,8 @@ function syRender(){
   const n=SY.queue.length;
   const txt=syBusy||syRunning?'⏳ синхронізація…':syErr?`⚠ ${syErr}${n?` · ${n} змін чекає`:''}`:n?`⏳ ${n} змін чекає`:'☁ синхронізовано';
   bar.textContent=txt;bar.className=syErr?'err':'';
-  st.textContent=txt+(SY.last&&!syErr?` · остання: ${new Date(SY.last).toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit'})}`:'');
+  const t=ms=>new Date(ms).toLocaleString('uk-UA',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+  st.textContent=txt+(SY.last&&!syErr?` · остання: ${new Date(SY.last).toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit'})}`:'')+(SY.bk?` · копія таблиці: ${t(SY.bk)}`:'');
   st.className='mute'+(syErr?' err':'');
 }
 
@@ -950,24 +1037,47 @@ $('#syConnect').onclick=async()=>{
   SY.url=url;SY.token=tok;st.textContent='Перевірка…';
   try{await syFetch('GET','ping')}
   catch(e){SY.url=old.url;SY.token=old.token;st.textContent='⚠ '+e.message;st.className='mute err';return}
-  delete SY.auto;delete SY.off;
+  delete SY.off;
   if(old.url!==url)SY.inited=false;
   sySave();syncNow();
 };
 $('#syNow').onclick=syncNow;
+// Додати втрачене з попереднього локального стану (нічого не видаляє)
+$('#syUndo').onclick=()=>{
+  let arr=[];try{arr=JSON.parse(localStorage.getItem(PREV_KEY)||'[]')}catch(e){}
+  if(!arr.length){alert('Попередніх станів на цьому пристрої немає.');return}
+  const p=arr[0],old=JSON.parse(p.s);
+  const when=new Date(p.t).toLocaleString('uk-UA');
+  if(!confirm(`Додати до поточних даних записи з попереднього стану цього пристрою (${when}: ${old.entries.length} записів, зараз ${S.entries.length})? Нічого не буде видалено.`))return;
+  mergeLocal(old);save();render();
+};
+// Відправити чергу попри захист від масових видалень
+$('#syForce').onclick=async()=>{
+  if(!SY.url||!SY.queue.length){alert('Черга порожня.');return}
+  if(!confirm(`Відправити ${SY.queue.length} змін у таблицю, не зважаючи на захист від масових видалень?`))return;
+  await syFlush(true);
+};
+// Замінити всю таблицю даними цього пристрою (лише вручну, з підтвердженням словом)
 $('#syPush').onclick=async()=>{
-  if(!SY.url||!confirm('Замінити всі дані в таблиці тими, що в застосунку?'))return;
-  syPushAll();SY.inited=true;sySave();await syFlush();
+  if(!SY.url)return;
+  if(prompt('Це замінить усю таблицю даними з цього пристрою. Для підтвердження введіть: ЗАМІНИТИ')!=='ЗАМІНИТИ')return;
+  try{
+    const j=await syFetch('GET','pull');SY.rev=j.rev;
+    SY.queue=[];syInflight=0;
+    for(const t in rowsOf)SY.queue.push({t,op:'replace',rows:rowsOf[t]()});
+    SY.base=snapshot();SY.inited=true;sySave();
+    await syFlush(true);
+  }catch(e){syErr=e.message;syRender()}
 };
 $('#syPull').onclick=async()=>{
-  if(!SY.url||!confirm('Замінити дані в застосунку даними з таблиці? Несинхронізовані зміни буде втрачено.'))return;
-  try{const T=(await syFetch('GET','pull')).tables;SY.queue=[];applyRemote(T);SY.inited=true;SY.last=Date.now();syErr='';sySave()}
+  if(!SY.url||!confirm('Замінити дані в застосунку даними з таблиці? Поточні дані збережуться як попередній стан, а несинхронізовані зміни буде втрачено.'))return;
+  try{const j=await syFetch('GET','pull');SY.queue=[];applyRemote(j.tables);SY.rev=j.rev;SY.bk=j.lastBackup;SY.inited=true;SY.last=Date.now();syErr='';sySave()}
   catch(e){syErr=e.message}
   syRender();
 };
 $('#syOff').onclick=()=>{
   if(!confirm('Відключити синхронізацію? Дані в застосунку залишаться.'))return;
-  SY={queue:[],base:{},off:true};sySave();$('#syUrl').value=$('#syTok').value='';syRender();
+  SY={queue:[],base:{},off:true,dev:SY.dev};sySave();$('#syUrl').value=$('#syTok').value='';syRender();
 };
 addEventListener('online',syncNow);
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&Date.now()-(SY.last||0)>30000)syncNow()});
