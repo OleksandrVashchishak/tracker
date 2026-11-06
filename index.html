@@ -159,8 +159,8 @@ svg text{fill:var(--mute);font-size:10px}
 
 <section id="tab-base" hidden>
   <div class="card">
-    <h2>Продукти і страви</h2>
-    <div class="row" style="margin-bottom:8px"><button data-newp="simple">+ Продукт</button><button data-newp="recipe">+ Страва з інгредієнтів</button></div>
+    <h2>Продукти</h2>
+    <button data-newp="1" style="width:100%;margin-bottom:8px">+ Продукт</button>
     <input id="pq" placeholder="Пошук" style="margin-bottom:6px">
     <div id="prods"></div>
   </div>
@@ -220,20 +220,8 @@ svg text{fill:var(--mute);font-size:10px}
   <h3 id="dpT">Продукт</h3>
   <input id="pn" placeholder="Назва">
   <select id="pc"></select>
-  <div class="chips">
-    <button class="chip" data-pm="simple">Просто ккал</button>
-    <button class="chip" data-pm="recipe">З інгредієнтів</button>
-  </div>
-  <div id="pSimple">
-    <div class="row"><input id="pk" type="number" inputmode="decimal" placeholder="ккал / 100 г"><input id="pp" type="number" inputmode="decimal" placeholder="ккал / порція"></div>
-  </div>
-  <div id="pRecipe" hidden>
-    <div id="pRows"></div>
-    <button id="pAddRow" style="margin-bottom:8px">+ інгредієнт</button>
-    <input id="pw" type="number" inputmode="decimal" placeholder="вага готової страви, г (порожньо = сума)">
-    <input id="pport" type="number" inputmode="decimal" placeholder="порція, г (необов'язково)">
-    <div class="mute" id="pRes" style="margin-bottom:8px"></div>
-  </div>
+  <div class="row"><input id="pk" type="number" inputmode="decimal" placeholder="ккал / 100 г"><input id="pp" type="number" inputmode="decimal" placeholder="ккал / порція"></div>
+  <div class="mute" style="margin:6px 0 10px">Страву (суп, запіканку) додавайте як звичайний продукт: ккал на 100 г готової страви.</div>
   <div class="mute" style="margin-bottom:4px">Порція в штуках (необов'язково): 1 одиниця = N г</div>
   <div class="row"><input id="pu" placeholder="одиниця: шт, скибка…"><input id="pug" type="number" inputmode="decimal" placeholder="г в одній"></div>
   <div class="row" style="margin-top:8px"><button id="pDel">Видалити</button><button id="pCancel">Скасувати</button><button class="p" id="pSave">Зберегти</button></div>
@@ -326,7 +314,7 @@ function load(){
 function save(){delete S.pristine;try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}syncSchedule()}
 
 let S=load(),cur=iso(new Date()),meal=(()=>{const h=new Date().getHours();return h<10?'Сніданок':h<15?'Обід':h<20?'Вечеря':'Інше'})();
-let mode='prod',dirtyK=false,edId=null,pIdx=-1,pMode='simple';
+let mode='prod',dirtyK=false,edId=null,pIdx=-1;
 try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}
 
 const dayEntries=d=>S.entries.filter(e=>e.d===d);
@@ -594,7 +582,7 @@ function renderBase(){
   $('#prods').innerHTML=[...S.cats.map(c=>[c.n,c.id]),['Без категорії','']].map(([n,id])=>{
     const l=list.filter(x=>catId(x.p)===id);if(!l.length)return'';
     return `<div class="grp"><span>${esc(n)}</span><span>${l.length}</span></div>`+
-      l.map(({p,i})=>`<div class="it" data-prod="${i}"><span>${esc(p.n)}${p.r?' 🍲':''}</span><span class="g">${plabel(p)}</span></div>`).join('');
+      l.map(({p,i})=>`<div class="it" data-prod="${i}"><span>${esc(p.n)}</span><span class="g">${plabel(p)}</span></div>`).join('');
   }).join('')||'<div class="mute">Нічого не знайдено</div>';
   $('#tplList').innerHTML=S.templates.map(t=>`<div class="it" style="cursor:default"><span>${esc(t.n)}</span><span class="g">${t.m}</span><b>${Math.round(tplK(t))}</b><button class="x" data-deltpl="${t.id}">✕</button></div>`).join('')||'<div class="mute">Шаблонів ще немає</div>';
 }
@@ -736,65 +724,26 @@ $('#eSave').onclick=()=>{
 $('#eDel').onclick=()=>{S.entries=S.entries.filter(x=>x.id!=edId);save();$('#de').close();render()};
 $('#eCancel').onclick=()=>$('#de').close();
 
-/* ---------- продукти / страви ---------- */
-function addRow(n='',g=''){
-  const d=document.createElement('div');d.className='row';d.style.marginBottom='6px';
-  d.innerHTML=`<div class="ac"><input class="rn" placeholder="інгредієнт" value="${esc(n)}" autocomplete="off"></div><input class="rg" type="number" inputmode="decimal" placeholder="г" value="${g}" style="max-width:90px"><button class="x" style="flex:0">✕</button>`;
-  $('#pRows').appendChild(d);
-  attachAC(d.querySelector('.rn'),{next:()=>d.querySelector('.rg').focus()});
-}
-function recipe(){
-  let tot=0,gs=0,miss=[];
-  document.querySelectorAll('#pRows .row').forEach(r=>{
-    const n=r.querySelector('.rn').value.trim(),g=+r.querySelector('.rg').value;
-    if(!n||!g)return;gs+=g;
-    const p=prod(n);if(p&&p.k!=null)tot+=g*p.k/100;else miss.push(n);
-  });
-  const w=+$('#pw').value||gs;
-  return {tot,gs,w,k:w?tot/w*100:0,miss};
-}
-function showRes(){
-  const r=recipe();
-  $('#pRes').textContent=r.gs?`Разом ${Math.round(r.tot)} ккал на ${r.w} г → ${r1(r.k)} ккал/100г`+(r.miss.length?` · немає в базі: ${r.miss.join(', ')}`:''):'';
-}
-function setPMode(m){
-  pMode=m;
-  document.querySelectorAll('[data-pm]').forEach(b=>b.classList.toggle('on',b.dataset.pm===m));
-  $('#pSimple').hidden=m!=='simple';$('#pRecipe').hidden=m!=='recipe';
-}
-function openProd(i,mode0){
+/* ---------- продукти ---------- */
+function openProd(i){
   pIdx=i;const p=i>=0?S.products[i]:null;
-  $('#dpT').textContent=p?'Редагувати':'Новий продукт / страва';
+  $('#dpT').textContent=p?'Редагувати':'Новий продукт';
   $('#pn').value=p?p.n:'';$('#pk').value=p&&p.k!=null?p.k:'';$('#pp').value=p&&p.p!=null?p.p:'';
-  $('#pRows').innerHTML='';$('#pw').value=p&&p.w?p.w:'';$('#pport').value='';
   $('#pu').value=p&&p.u?p.u.n:'';$('#pug').value=p&&p.u?p.u.g:'';
   $('#pc').innerHTML='<option value="">Без категорії</option>'+S.cats.map(c=>`<option value="${c.id}">${esc(c.n)}</option>`).join('');
   $('#pc').value=p?catId(p):'';
-  if(p&&p.r)p.r.forEach(r=>addRow(r.n,r.g));
-  setPMode(p?(p.r?'recipe':'simple'):mode0);
-  if(!p&&mode0==='recipe'){addRow();addRow()}
-  $('#pDel').hidden=!p;showRes();$('#dp').showModal();
+  $('#pDel').hidden=!p;$('#dp').showModal();
 }
-$('#pAddRow').onclick=()=>addRow();
-$('#pRows').addEventListener('input',showRes);$('#pw').addEventListener('input',showRes);
-$('#pRows').addEventListener('click',e=>{if(e.target.matches('.x')){e.target.parentElement.remove();showRes()}});
-document.querySelectorAll('[data-pm]').forEach(b=>b.onclick=()=>setPMode(b.dataset.pm));
 $('#pSave').onclick=()=>{
   const n=$('#pn').value.trim();if(!n)return;
-  let p;
-  if(pMode==='simple'){
-    const k=$('#pk').value===''?null:+$('#pk').value,pp=$('#pp').value===''?null:+$('#pp').value;
-    if(k==null&&pp==null)return;
-    p={n,k,...(pp!=null?{p:pp}:{})};
-  }else{
-    const r=recipe();if(!r.gs)return;
-    const rows=[...document.querySelectorAll('#pRows .row')].map(x=>({n:x.querySelector('.rn').value.trim(),g:+x.querySelector('.rg').value})).filter(x=>x.n&&x.g);
-    p={n,k:r1(r.k),r:rows,w:+$('#pw').value||null};
-    const port=+$('#pport').value;if(port>0)p.p=r1(r.k*port/100);
-  }
+  const k=$('#pk').value===''?null:+$('#pk').value,pp=$('#pp').value===''?null:+$('#pp').value;
+  if(k==null&&pp==null)return;
+  const old=pIdx>=0?S.products[pIdx]:null;
+  const p={n,k,...(pp!=null?{p:pp}:{})};
+  if(old&&old.r){p.r=old.r;if(old.w!=null)p.w=old.w}   // склад зі старих даних не губимо
   if($('#pc').value)p.c=$('#pc').value;
   if(+$('#pug').value>0)p.u={n:$('#pu').value.trim()||'шт',g:+$('#pug').value};
-  if(pIdx>=0){p.id=S.products[pIdx].id;S.products[pIdx]=p}else S.products.push(p);
+  if(old){p.id=old.id;S.products[pIdx]=p}else S.products.push(p);
   save();$('#dp').close();render();
 };
 $('#pDel').onclick=()=>{S.products.splice(pIdx,1);save();$('#dp').close();render()};
@@ -834,7 +783,7 @@ document.addEventListener('click',e=>{
   }
   else if(d.edit)openEdit(d.edit);
   else if(d.prod!==undefined)openProd(+d.prod);
-  else if(d.newp)openProd(-1,d.newp);
+  else if(d.newp)openProd(-1);
   else if(d.day){cur=d.day;render();document.querySelector('[data-tab="day"]').click()}
 });
 document.addEventListener('change',e=>{
