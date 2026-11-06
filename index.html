@@ -86,6 +86,26 @@ dialog::backdrop{background:#0007}
 dialog input,dialog select{margin-bottom:8px}
 dialog h3{margin:0 0 10px}
 svg text{fill:var(--mute);font-size:10px}
+.nav h1{cursor:pointer}
+.nav button.ic{padding:7px 9px;line-height:0}
+.nav button.ic svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+#cal{width:min(94vw,380px);overflow-x:hidden}
+.calh{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}
+.calh b{flex:1;text-align:center;font-size:16px}
+.calg{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px}
+.calg .wd{text-align:center;font-size:11px;color:var(--mute);padding:2px 0 4px}
+.calg button{padding:0;min-width:0;aspect-ratio:1;border-radius:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:15px;line-height:1.1;background:none;border:1px solid transparent}
+.calg button small{font-size:9px;color:var(--mute);margin-top:1px}
+.calg button.ok{background:var(--accbg);color:var(--acc);font-weight:600}
+.calg button.ok small{color:var(--acc);opacity:.8}
+.calg button.over{background:color-mix(in srgb,var(--bad) 16%,transparent);color:var(--bad);font-weight:600}
+.calg button.over small{color:var(--bad);opacity:.8}
+.calg button.miss{border:1px dashed var(--bad);color:var(--bad)}
+.calg button.fut{color:var(--mute);opacity:.45}
+.calg button.today{box-shadow:inset 0 0 0 2px var(--ink)}
+.calg button.sel{outline:2px solid var(--acc);outline-offset:1px}
+.calleg{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:12px;color:var(--mute);margin-top:12px}
+.calleg i{display:inline-block;width:12px;height:12px;border-radius:4px;vertical-align:-2px;margin-right:4px}
 </style>
 </head>
 <body>
@@ -95,7 +115,8 @@ svg text{fill:var(--mute);font-size:10px}
 <section id="tab-day">
   <div class="card nav">
     <button data-d="-1">‹</button>
-    <h1 id="title"></h1>
+    <h1 id="title" title="Календар"></h1>
+    <button class="ic" id="calBtn" title="Календар"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg></button>
     <button data-d="1">›</button>
   </div>
 
@@ -214,6 +235,14 @@ svg text{fill:var(--mute);font-size:10px}
   <div class="row"><input id="eg" type="number" inputmode="decimal" placeholder="грам"><input id="ek" type="number" inputmode="decimal" placeholder="ккал"></div>
   <select id="em" style="margin-top:8px"></select>
   <div class="row"><button id="eDel">Видалити</button><button id="eCancel">Скасувати</button><button class="p" id="eSave">Зберегти</button></div>
+</dialog>
+
+<dialog id="cal">
+  <div class="calh"><button data-cm="-1">‹</button><b id="calT"></b><button data-cm="1">›</button></div>
+  <div class="calg" id="calG"></div>
+  <div class="mute" id="calS" style="margin-top:10px"></div>
+  <div class="calleg"><span><i style="background:var(--accbg)"></i>заповнено</span><span><i style="background:color-mix(in srgb,var(--bad) 16%,transparent)"></i>понад ціль</span><span><i style="border:1px dashed var(--bad)"></i>пропущено</span></div>
+  <div class="row" style="margin-top:12px"><button data-cm="0">Сьогодні</button><button id="calX">Закрити</button></div>
 </dialog>
 
 <dialog id="dp">
@@ -388,6 +417,39 @@ function renderDay(){
   checkSave();
 }
 function tplK(t){return t.items.reduce((s,i)=>s+(calc(i.n,i.g)??i.k),0)}
+
+/* ---------- календар ---------- */
+let calM=null; // 'YYYY-MM' показаного місяця
+function openCal(){calM=cur.slice(0,7);renderCal();$('#cal').showModal()}
+function renderCal(){
+  const today=iso(new Date()),goal=+S.goal||0,tot={};
+  S.entries.forEach(e=>{tot[e.d]=(tot[e.d]||0)+e.k});
+  const first=Object.keys(tot).sort()[0]; // до першого запису дні не рахуються пропущеними
+  const [y,m]=calM.split('-').map(Number),n=new Date(y,m,0).getDate(),lead=(new Date(y,m-1,1).getDay()+6)%7;
+  $('#calT').textContent=new Date(y,m-1,15).toLocaleDateString('uk-UA',{month:'long',year:'numeric'});
+  let h=['Пн','Вт','Ср','Чт','Пт','Сб','Нд'].map(w=>`<div class="wd">${w}</div>`).join('')+'<div></div>'.repeat(lead),ok=0,miss=0;
+  for(let i=1;i<=n;i++){
+    const d=calM+'-'+String(i).padStart(2,'0'),t=tot[d];let c='',sub='';
+    if(t!=null){c=goal&&t>goal?'over':'ok';sub=Math.round(t);ok++}
+    else if(d>today)c='fut';
+    else if(first&&d>=first&&d<today){c='miss';miss++}
+    if(d===today)c+=' today';
+    if(d===cur)c+=' sel';
+    h+=`<button class="${c}" data-cd="${d}" title="${fmt(d)}">${i}${sub!==''?`<small>${sub}</small>`:''}</button>`;
+  }
+  $('#calG').innerHTML=h;
+  $('#calS').textContent=ok||miss?`Заповнено ${ok} дн.`+(miss?` · пропущено ${miss}`:''):'У цьому місяці записів немає';
+}
+$('#calBtn').onclick=$('#title').onclick=openCal;
+$('#calX').onclick=()=>$('#cal').close();
+$('#cal').addEventListener('click',e=>{
+  if(e.target===e.currentTarget){e.currentTarget.close();return}
+  const b=e.target.closest('[data-cd],[data-cm]');if(!b)return;
+  e.stopPropagation();
+  if(b.dataset.cd){cur=b.dataset.cd;$('#cal').close();render();document.querySelector('[data-tab="day"]').click()}
+  else if(b.dataset.cm==='0'){cur=iso(new Date());$('#cal').close();render()}
+  else{const [y,m]=calM.split('-').map(Number),d=new Date(y,m-1+ +b.dataset.cm,1);calM=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');renderCal()}
+});
 
 /* ---------- аналітика ---------- */
 let aP='week',aO=0;
