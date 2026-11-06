@@ -64,6 +64,13 @@ button:disabled{opacity:.35;cursor:default}
 #hint{color:var(--acc);font-weight:600;font-size:14px;margin-top:2px}
 #hint:empty{display:none}
 .tabs button{font-size:14px}
+.ac{position:relative}
+.aclist{position:absolute;left:0;right:0;top:100%;margin-top:4px;z-index:30;max-height:270px;overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px #0004}
+.aci{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;cursor:pointer;border-top:1px solid var(--line)}
+.aci:first-child{border-top:0}
+.aci.on,.aci:hover{background:var(--accbg)}
+.aci .mute{font-size:12px;white-space:nowrap}
+.aci.none{cursor:default;color:var(--mute);font-size:14px}
 #syncBar{text-align:right;font-size:12px;color:var(--mute);min-height:14px;margin:-8px 0 8px;cursor:pointer}
 #syncBar.err,#syState.err{color:var(--bad)}
 .it button.ic{padding:6px;line-height:0;margin-left:2px}
@@ -115,7 +122,7 @@ svg text{fill:var(--mute);font-size:10px}
       <button class="chip" data-mode="quick" id="mQuick">⚡ Швидко</button>
     </div>
     <div id="fProd">
-      <input id="n" list="plist" placeholder="Продукт або страва" autocomplete="off">
+      <div class="ac"><input id="n" placeholder="Продукт або страва" autocomplete="off"></div>
       <div class="row" style="margin-top:8px">
         <input id="g" type="number" inputmode="decimal" placeholder="грам" style="min-width:0">
         <select id="gu" hidden style="flex:0 0 72px;padding:9px 4px"><option value="g">г</option></select>
@@ -203,7 +210,7 @@ svg text{fill:var(--mute);font-size:10px}
 
 <dialog id="de">
   <h3>Запис</h3>
-  <input id="en" placeholder="Назва" list="plist">
+  <div class="ac"><input id="en" placeholder="Назва" autocomplete="off"></div>
   <div class="row"><input id="eg" type="number" inputmode="decimal" placeholder="грам"><input id="ek" type="number" inputmode="decimal" placeholder="ккал"></div>
   <select id="em" style="margin-top:8px"></select>
   <div class="row"><button id="eDel">Видалити</button><button id="eCancel">Скасувати</button><button class="p" id="eSave">Зберегти</button></div>
@@ -630,7 +637,67 @@ function addQuick(){
   save();$('#qk').value=$('#qn').value='';render();$('#qk').focus();
 }
 $('#add').onclick=add;$('#addQ').onclick=addQuick;
-['n','g','k'].forEach(id=>$('#'+id).addEventListener('keydown',e=>{if(e.key==='Enter')add()}));
+['g','k'].forEach(id=>$('#'+id).addEventListener('keydown',e=>{if(e.key==='Enter')add()}));
+
+/* ---------- пошук продуктів зі списком підказок ---------- */
+// Список з'являється одразу при фокусі (часті продукти) і фільтрується під час набору.
+// Стрілки вгору/вниз, Enter вибирає, Esc закриває. Працює і мишею, і дотиком.
+function attachAC(inp,opts={}){
+  const list=document.createElement('div');
+  list.className='aclist';list.hidden=true;
+  inp.parentElement.appendChild(list);
+  let items=[],hi=-1;
+  const norm=s=>String(s).toLowerCase();
+  function candidates(q){
+    q=norm(q.trim());
+    if(!q){
+      const cnt={};S.entries.forEach(e=>{const k=norm(e.n);cnt[k]=(cnt[k]||0)+1});
+      return [...S.products].sort((a,b)=>(cnt[norm(b.n)]||0)-(cnt[norm(a.n)]||0)).slice(0,8);
+    }
+    const score=p=>{const n=norm(p.n);if(n.startsWith(q))return 0;if(n.split(/[\s-]+/).some(w=>w.startsWith(q)))return 1;return n.includes(q)?2:-1};
+    return S.products.map(p=>[score(p),p]).filter(x=>x[0]>=0)
+      .sort((a,b)=>a[0]-b[0]||a[1].n.localeCompare(b[1].n,'uk')).slice(0,8).map(x=>x[1]);
+  }
+  function render(){
+    const q=inp.value.trim();
+    items=candidates(q);
+    if(hi===-2)hi=(q&&items[0]&&norm(items[0].n).startsWith(norm(q)))?0:-1;   // автовибір лише за збігом початку слова
+    if(!items.length&&!q){list.hidden=true;return}
+    list.innerHTML=items.length
+      ?items.map((p,i)=>`<div class="aci${i===hi?' on':''}" data-i="${i}"><span>${esc(p.n)}</span><span class="mute">${esc(plabel(p))}</span></div>`).join('')
+      :'<div class="aci none">Немає в базі: введіть грами й ккал вручну</div>';
+    list.hidden=false;
+    const on=list.querySelector('.on');if(on)on.scrollIntoView({block:'nearest'});
+  }
+  const close=()=>{list.hidden=true;hi=-1};
+  function pick(i){
+    const p=items[i];if(!p)return;
+    inp.value=p.n;close();
+    inp.dispatchEvent(new Event('input',{bubbles:true}));
+    if(opts.next)opts.next();
+  }
+  inp.addEventListener('input',()=>{hi=-2;render()});
+  inp.addEventListener('focus',()=>{hi=-2;render()});
+  inp.addEventListener('blur',close);
+  inp.addEventListener('keydown',e=>{
+    if(e.key==='ArrowDown'||e.key==='ArrowUp'){
+      e.preventDefault();
+      if(list.hidden||!items.length){hi=-1;render()}
+      if(!items.length)return;
+      hi=e.key==='ArrowDown'?(hi+1)%items.length:(hi<=0?items.length-1:hi-1);
+      render();
+    }else if(e.key==='Enter'){
+      if(!list.hidden&&items.length&&hi>=0){e.preventDefault();pick(hi)}
+      else if(opts.enter)opts.enter();
+    }else if(e.key==='Escape'&&!list.hidden){e.preventDefault();e.stopPropagation();close()}
+  });
+  list.addEventListener('mousedown',e=>{       // mousedown, щоб поле не втратило фокус до вибору
+    e.preventDefault();
+    const r=e.target.closest('[data-i]');if(r)pick(+r.dataset.i);
+  });
+}
+attachAC($('#n'),{next:()=>$('#g').focus(),enter:add});
+attachAC($('#en'),{next:()=>$('#eg').focus()});
 ['qk','qn'].forEach(id=>$('#'+id).addEventListener('keydown',e=>{if(e.key==='Enter')addQuick()}));
 
 /* ---------- шаблони ---------- */
@@ -672,8 +739,9 @@ $('#eCancel').onclick=()=>$('#de').close();
 /* ---------- продукти / страви ---------- */
 function addRow(n='',g=''){
   const d=document.createElement('div');d.className='row';d.style.marginBottom='6px';
-  d.innerHTML=`<input class="rn" list="plist" placeholder="інгредієнт" value="${esc(n)}"><input class="rg" type="number" inputmode="decimal" placeholder="г" value="${g}" style="max-width:90px"><button class="x" style="flex:0">✕</button>`;
+  d.innerHTML=`<div class="ac"><input class="rn" placeholder="інгредієнт" value="${esc(n)}" autocomplete="off"></div><input class="rg" type="number" inputmode="decimal" placeholder="г" value="${g}" style="max-width:90px"><button class="x" style="flex:0">✕</button>`;
   $('#pRows').appendChild(d);
+  attachAC(d.querySelector('.rn'),{next:()=>d.querySelector('.rg').focus()});
 }
 function recipe(){
   let tot=0,gs=0,miss=[];
