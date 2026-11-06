@@ -330,9 +330,6 @@ function load(){
     const s=JSON.parse(localStorage.getItem(KEY)||localStorage.getItem('kcal-v1'));
     if(s&&s.entries){
       s.templates=s.templates||seedTpl();
-      if(!s.products.some(p=>p.n==='Кава'))s.products.push({n:'Кава',k:null,p:50});
-      if(s.goal===1200)s.goal=1500;
-      const ap=s.products.find(p=>p.n==='Яблуко');if(ap&&!ap.u)ap.u={n:'шт',g:150};
       return migrate(s);
     }
   }catch(e){}
@@ -372,7 +369,8 @@ const ago=d=>d===addDays(cur,-1)?'вчора':dm(d);
 function copyFrom(kind){
   const src=lastDayWith(kind==='meal'?meal:null);if(!src)return;
   const list=S.entries.filter(e=>e.d===src&&(kind!=='meal'||e.m===meal));
-  list.forEach((e,j)=>S.entries.push({...e,id:Date.now()+j,d:cur}));
+  // копія на сьогодні рахується за поточною базою (як шаблони); сам минулий день не змінюється
+  list.forEach((e,j)=>S.entries.push({...e,id:Date.now()+j,d:cur,k:calc(e.n,e.g)??e.k}));
   save();render();
 }
 
@@ -774,7 +772,15 @@ function openEdit(id){
   $('#em').innerHTML=MEALS.map(m=>`<option${m===e.m?' selected':''}>${m}</option>`).join('');
   $('#de').showModal();
 }
-$('#eg').addEventListener('input',()=>{const v=calc($('#en').value,+$('#eg').value);if(v!=null&&!eDirty)$('#ek').value=v});
+// Зміна грамів у старому записі рахується за його власною калорійністю (ккал/г того дня),
+// а не за поточною з бази: оновлення бази не переписує минулі дні.
+$('#eg').addEventListener('input',()=>{
+  if(eDirty)return;
+  const e=S.entries.find(x=>x.id==edId),g=+$('#eg').value;
+  const own=e&&e.g>0&&String(e.n).trim().toLowerCase()===$('#en').value.trim().toLowerCase();
+  const v=own?(g>0?r1(g*e.k/e.g):null):calc($('#en').value,g);
+  if(v!=null)$('#ek').value=v;
+});
 $('#ek').addEventListener('input',()=>eDirty=true);
 $('#eSave').onclick=()=>{
   const e=S.entries.find(x=>x.id==edId);
@@ -800,6 +806,15 @@ $('#pSave').onclick=()=>{
   const k=$('#pk').value===''?null:+$('#pk').value,pp=$('#pp').value===''?null:+$('#pp').value;
   if(k==null&&pp==null)return;
   const old=pIdx>=0?S.products[pIdx]:null;
+  const lc=s=>String(s).trim().toLowerCase();
+  if(S.products.some(x=>x!==old&&lc(x.n)===lc(n))){alert(`Продукт «${n}» уже є в базі.`);return}
+  // Перейменування: записи й шаблони прив'язані до назви, тож переносимо назву і туди.
+  // Калорії записів не чіпаємо: минулі дні лишаються такими, як були.
+  if(old&&old.n!==n){
+    const was=lc(old.n);
+    S.entries.forEach(e=>{if(lc(e.n)===was)e.n=n});
+    S.templates.forEach(t=>t.items.forEach(i=>{if(lc(i.n)===was)i.n=n}));
+  }
   const p={n,k,...(pp!=null?{p:pp}:{})};
   if(old&&old.r){p.r=old.r;if(old.w!=null)p.w=old.w}   // склад зі старих даних не губимо
   if($('#pc').value)p.c=$('#pc').value;
